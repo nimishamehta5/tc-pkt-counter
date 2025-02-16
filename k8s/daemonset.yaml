@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tc-pkt-counter
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: tc-pkt-counter
+  template:
+    metadata:
+      labels:
+        app: tc-pkt-counter
+    spec:
+      hostNetwork: true  # Required to access host network interfaces
+      containers:
+      - name: tc-pkt-counter
+        image: localhost/tc-pkt-counter:latest
+        imagePullPolicy: Never  
+        securityContext:
+          privileged: true  # Required for eBPF operations
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+        volumeMounts:
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+          mountPropagation: Bidirectional
+        env:
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+      volumes:
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+          type: Directory

@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: iperf3-server
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: iperf3-server
+  template:
+    metadata:
+      labels:
+        app: iperf3-server
+    spec:
+      containers:
+      - name: iperf3
+        image: networkstatic/iperf3
+        args: ["-s"]
+        ports:
+        - containerPort: 5201
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+      terminationGracePeriodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iperf3-server
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: iperf3-server
+  ports:
+    - protocol: TCP
+      port: 5201
+      targetPort: 5201
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: iperf3-client
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: iperf3-client
+  template:
+    metadata:
+      labels:
+        app: iperf3-client
+    spec:
+      containers:
+      - name: iperf3-client
+        image: alpine
+        command:
+          - /bin/sh
+          - "-c"
+          - |
+            apk add --no-cache iputils iperf3
+            while true; do
+              for ip in $(getent ahosts iperf3-server.default.svc.cluster.local | awk '{print $1}' | sort | uniq); do
+                echo "Testing against $ip"
+                iperf3 -c $ip -t 10 -u -b 100M
+              done
+              sleep 10
+            done
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+      terminationGracePeriodSeconds: 5
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: icmp-ping
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: icmp-ping
+  template:
+    metadata:
+      labels:
+        app: icmp-ping
+    spec:
+      containers:
+      - name: ping-test
+        image: alpine 
+        command:
+          - /bin/sh
+          - "-c"
+          - |
+            apk add --no-cache iputils
+            while true; do
+              for ip in $(getent ahosts iperf3-server.default.svc.cluster.local | awk '{print $1}' | sort | uniq); do
+                echo "Pinging $ip"
+                ping -c 5 $ip
+              done
+              sleep 10
+            done
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+          requests:
+            cpu: "50m"
+            memory: "32Mi"
+      terminationGracePeriodSeconds: 5

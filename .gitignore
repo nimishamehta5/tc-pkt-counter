@@ -1,0 +1,14 @@
+# Default ignored files
+.idea/
+
+*.iml
+
+# generated bindings
+*_bpf*.go
+*_bpf*.o
+
+# generated kernel header
+vmlinux.h
+
+# go binaries
+tc-pkt-counter

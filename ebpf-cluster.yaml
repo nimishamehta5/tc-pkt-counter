@@ -1,0 +1,39 @@
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+mounts:
+  - location: "~"
+    writable: true
+  - location: "/tmp/lima"
+    writable: true
+provision:
+  - mode: system
+    script: |
+      apt-get update
+  
+      apt-get install -y apt-transport-https ca-certificates curl clang llvm
+      apt-get install -y libelf-dev libpcap-dev libbfd-dev binutils-dev build-essential make
+      apt-get install -y linux-tools-common linux-tools-$(uname -r)
+      apt-get install -y bpfcc-tools libbpfcc-dev libbpf-dev
+      apt-get install -y python3-pip zsh tmux
+      apt-get install -y zip unzip git
+      
+      # Fixing /usr/include/linux/types.h:5:10: fatal error: 'asm/types.h' file not found 
+      ln -sf /usr/include/asm-generic/ /usr/include/asm
+      
+      # Installing Go 
+      ARCH=$(uname -m)
+      if [ "$ARCH" = "x86_64" ]; then
+        wget --quiet https://go.dev/dl/go1.22.3.linux-amd64.tar.gz
+        tar -C /usr/local -xzf go1.22.3.linux-amd64.tar.gz
+      elif [ "$ARCH" = "aarch64" ]; then
+        wget --quiet https://go.dev/dl/go1.22.3.linux-arm64.tar.gz
+        tar -C /usr/local -xzf go1.22.3.linux-arm64.tar.gz
+      else
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+      fi
+      echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
