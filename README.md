@@ -55,7 +55,7 @@ kubectl logs -l app=tc-pkt-counter -f
 
 1. Install lima to have a Linux VM: 
    ```bash
-   brew install limactl
+   brew install lima
    ```
 2. Start lima with the VM using `ebpf-cluster.yaml` config:
    ```bash
