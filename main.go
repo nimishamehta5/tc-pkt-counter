@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/florianl/go-tc"
+	"github.com/florianl/go-tc/core"
+	"golang.org/x/sys/unix"
 )
 
 // PacketKey represents the key used in the BPF map
@@ -84,6 +88,107 @@ func formatTCPFlags(flags uint8) string {
 	return strings.Join(flagStrs, "|")
 }
 
+// attachTCX attempts to attach the eBPF program using the modern TCX API (kernel >= 6.6)
+func attachTCX(ifaceIndex int, prog *ebpf.Program) (link.Link, error) {
+	egressHook := link.TCXOptions{
+		Interface: ifaceIndex,
+		Attach:    ebpf.AttachTCXEgress,
+		Program:   prog,
+	}
+
+	return link.AttachTCX(egressHook)
+}
+
+// attachTC attaches the eBPF program using go-tc for kernel < 6.6
+func attachTC(ifaceName string, ifaceIndex int, prog *ebpf.Program) (io.Closer, error) {
+	// Open a netlink/tc connection to the Linux kernel
+	tcnl, err := tc.Open(&tc.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("could not open rtnetlink socket: %v", err)
+	}
+
+	// Create a qdisc/clsact object for the interface
+	qdisc := tc.Object{
+		Msg: tc.Msg{
+			Family:  unix.AF_UNSPEC,
+			Ifindex: uint32(ifaceIndex),
+			Handle:  core.BuildHandle(tc.HandleRoot, 0x0000),
+			Parent:  tc.HandleIngress, // We're using HandleIngress here as our base
+			Info:    0,
+		},
+		Attribute: tc.Attribute{
+			Kind: "clsact",
+		},
+	}
+
+	// Attach the qdisc/clsact to the interface
+	if err := tcnl.Qdisc().Add(&qdisc); err != nil {
+		tcnl.Close()
+		return nil, fmt.Errorf("could not assign clsact to %s: %v", ifaceName, err)
+	}
+
+	// Get the file descriptor of the eBPF program
+	fd := uint32(prog.FD())
+	flags := uint32(0x1) // Attach to TC_ACT_DIRECT action
+
+	// Create a tc/filter object for the egress path
+	egressFilter := tc.Object{
+		Msg: tc.Msg{
+			Family:  unix.AF_UNSPEC,
+			Ifindex: uint32(ifaceIndex),
+			Handle:  0,
+			Parent:  core.BuildHandle(tc.HandleRoot, tc.HandleMinEgress),
+			Info:    core.FilterInfo(1, 0x0003), // ETH_P_ALL (0x0003) - catch all ethernet packets
+		},
+		Attribute: tc.Attribute{
+			Kind: "bpf",
+			BPF: &tc.Bpf{
+				FD:    &fd,
+				Name:  ToCString("counters"),
+				Flags: &flags,
+			},
+		},
+	}
+
+	// Attach the filter to the egress path
+	if err := tcnl.Filter().Add(&egressFilter); err != nil {
+		// Clean up the qdisc
+		tcnl.Qdisc().Delete(&qdisc)
+		tcnl.Close()
+		return nil, fmt.Errorf("could not attach eBPF filter to egress: %v", err)
+	}
+
+	// Return a closer that will clean up everything when called
+	return &tcCloser{
+		tcnl:   tcnl,
+		qdisc:  qdisc,
+		filter: egressFilter,
+	}, nil
+}
+
+// ToCString converts a Go string to a C-string with null termination
+func ToCString(s string) *string {
+	cs := s + "\000"
+	return &cs
+}
+
+// tcCloser handles cleanup of TC resources
+type tcCloser struct {
+	tcnl   *tc.Tc
+	qdisc  tc.Object
+	filter tc.Object
+}
+
+func (c *tcCloser) Close() error {
+	if err := c.tcnl.Filter().Delete(&c.filter); err != nil {
+		log.Printf("Warning: Could not delete TC filter: %v", err)
+	}
+	if err := c.tcnl.Qdisc().Delete(&c.qdisc); err != nil {
+		log.Printf("Warning: Could not delete TC qdisc: %v", err)
+	}
+	return c.tcnl.Close()
+}
+
 func main() {
 	// Remove resource limits for kernels <5.11.
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -125,19 +230,27 @@ func main() {
 		log.Printf("Selected interface %s (index %d) has addresses: %v", ifname, iface.Index, addrs)
 	}
 
-	egressHook := link.TCXOptions{
-		Interface: iface.Index,
-		Attach:    ebpf.AttachTCXEgress,
-		Program:   objs.CountPackets,
-	}
-
-	egressLink, err := link.AttachTCX(egressHook)
+	// First try to attach using TCX (kernel >= 6.6)
+	var l io.Closer
+	link, err := attachTCX(iface.Index, objs.CountPackets)
 	if err != nil {
-		log.Fatal("Attaching egress TC program:", err)
+		if strings.Contains(err.Error(), "tcx not supported") {
+			log.Printf("TCX not supported (kernel < 6.6), falling back to TC...")
+			// Fall back to TC for older kernels
+			l, err = attachTC(ifname, iface.Index, objs.CountPackets)
+			if err != nil {
+				log.Fatal("Attaching TC program:", err)
+			}
+			log.Printf("Successfully attached TC program to interface %s using go-tc", ifname)
+		} else {
+			// Some other error occurred
+			log.Fatal("Attaching TCX program:", err)
+		}
+	} else {
+		l = link
+		log.Printf("Successfully attached TCX program to interface %s", ifname)
 	}
-	defer egressLink.Close()
-
-	log.Printf("Successfully attached TC programs (ingress and egress) to interface %s", ifname)
+	defer l.Close()
 
 	// Get the NODE_IP from environment variable or auto-detect
 	nodeIP := os.Getenv("NODE_IP")

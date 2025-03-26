@@ -33,12 +33,13 @@ RUN if [ -f /sys/kernel/btf/vmlinux ]; then \
 # Generate eBPF code
 RUN go generate ./...
 
-# Build the binary
+# Build the binary with proper cross-compilation
 ARG TARGETOS TARGETARCH
+RUN echo "Building for OS: $TARGETOS, Architecture: $TARGETARCH"
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o tc-pkt-counter
 
-# Final stage
-FROM debian:bookworm-slim
+# Final stage - use a minimal base image with the correct target platform
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 
 # Install networking tools and debug utilities
 RUN apt-get update && apt-get install -y \

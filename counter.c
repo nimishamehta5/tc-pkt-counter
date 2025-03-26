@@ -120,9 +120,10 @@ int count_packets(struct __sk_buff *skb) {
     // Add debug information
     bpf_printk("Packet protocol: %d, length: %d", iph->protocol, new_info.pkt_len);
     
-    // Add debug information before map update
-    bpf_printk("Updating map - proto=%d src_ip=%x dst_ip=%x src_port=%d dst_port=%d count=%d", 
-               new_info.protocol, new_info.src_ip, new_info.dst_ip, 
+    // Add debug information before map update - split into two calls to avoid too many arguments
+    bpf_printk("Updating map - proto=%d src_ip=%x dst_ip=%x", 
+               new_info.protocol, new_info.src_ip, new_info.dst_ip);
+    bpf_printk("Ports: src_port=%d dst_port=%d count=%d", 
                new_info.src_port, new_info.dst_port, new_info.count);
     
     bpf_map_update_elem(&pkt_count, &key, &new_info, BPF_ANY);
